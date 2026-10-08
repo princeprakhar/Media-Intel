@@ -6,12 +6,26 @@ This README documents what was actually built, what actually broke during develo
 
 ---
 
+## Table of Contents
+
+1. [Setup](#setup)
+2. [Architecture](#architecture)
+3. [Architecture v2 — End-to-End DFD & Sequence Diagrams](#architecture-v2--end-to-end-dfd--sequence-diagrams-current-implementation)
+4. [Design Notes Encoded in These Diagrams](#design-notes-encoded-in-these-diagrams)
+5. [Why Three Sources](#why-three-sources-and-what-each-one-actually-is)
+6. [UI](#ui)
+7. [Crawling Obstacles](#crawling-obstacles)
+8. [Entity Normalization](#entity-normalization--design-and-how-it-actually-broke)
+9. [Relationship Extraction](#relationship-extraction--design-and-how-it-actually-broke)
+10. [Storage Schema](#storage-schema)
+11. [API Endpoints](#api-endpoints)
+12. [Phase 4 — The Hard Questions](#phase-4--the-hard-questions)
+
+---
+
 ## Setup
 
-Requires Python 3.12 and [`uv`](https://docs.astral.sh/uv/). Only the
-**Playwright system dependencies** step differs by OS — everything else
-(`uv sync`, spaCy model download, running the pipeline) is identical
-everywhere.
+Requires Python 3.12 and [`uv`](https://docs.astral.sh/uv/). Only the **Playwright system dependencies** step differs by OS — everything else (`uv sync`, spaCy model download, running the pipeline) is identical everywhere.
 
 ### 1. Install `uv`
 
@@ -125,7 +139,426 @@ storage.py ── SQLite: documents / nodes / edges / edge_sources
 analysis.py + api.py ── FastAPI query layer
 ```
 
-### Why three sources, and what each one actually is
+---
+
+## Architecture v2 — End-to-End DFD & Sequence Diagrams (Current Implementation)
+
+This section supersedes the earlier draft diagrams and reflects the system as actually built and verified against real scraped data, including the feed-based crawl discovery, structural thread parsing, entity type-voting, noise-suppression layers, and the web UI.
+
+### 1. Data Flow Diagram
+
+#### 1.1 Level 0 — System Context
+
+```mermaid
+flowchart LR
+    CFG[/"config.yaml<br/>seeds · depth · whitelist · ignore_entities<br/>manual_aliases · manual_types"/]
+    WEB(["External Web<br/>Al Jazeera (news) · Hacker News (discussion)<br/>Reddit .json (social)"])
+    SYS["Media Intelligence Pipeline"]
+    ANALYST(["Analyst / Browser UI"])
+
+    CFG -->|"drives crawl + extraction behavior"| SYS
+    WEB -->|"HTML, XML/RSS, JSON"| SYS
+    SYS -->|"JSON: network · emerging · central · provenance"| ANALYST
+    ANALYST -->|"HTTP GET (API or UI)"| SYS
+```
+
+#### 1.2 Level 1 — Processes & Data Stores
+
+```mermaid
+flowchart TB
+    CFG[/"config.yaml"/]
+    WEB(["External Web"])
+
+    subgraph ACQUIRE["Acquisition"]
+        P1["P1 · Crawl\ncrawler.py\nBFS · domain whitelist · depth cap\nlisting-page structural filter\ndirect-fetch for XML/RSS feeds"]
+        D1[("D1 · Raw Page Cache\ndata/raw/*.json\nurl · html · markdown · title · depth")]
+    end
+
+    subgraph NORMALIZE["Normalization"]
+        P2["P2 · Normalize\nnormalizer.py\ncommon schema across sources\nReddit .json structured parse\nmarkdown-link + boilerplate cleanup"]
+        P2b["P2b · Thread Parse\nthreads.py\nHN depth-stack parser\nReddit recursive DOM parser"]
+        P3["P3 · Cross-Doc Boilerplate Strip\npipeline.py\nper source_type, >=60% frequency"]
+        D2[("D2 · documents\nUNIQUE(source_url)\ncontent_hash for dedup")]
+    end
+
+    subgraph EXTRACT["Extraction"]
+        P4["P4 · Entity Extraction\nentities.py\nspaCy NER + @handle regex + noun-chunk topics\nEntityRegistry: resolve/merge/ignore/manual-seed"]
+        P5["P5 · Relation Extraction\nrelations.py\nverb-role + appositive patterns\nbounded co-occurrence fallback (cap=8)"]
+        P6["P6 · Structural Reply Extraction\npipeline.py\ncomment author -> parent author, ground truth"]
+    end
+
+    subgraph STORE["Storage"]
+        P7["P7 · Ingest\nstorage.py\nnode upsert + type-vote\nedge upsert + weight increment"]
+        D3[("D3 · nodes\ncanonical_name UNIQUE\ntype_votes JSON · aliases JSON")]
+        D4[("D4 · edges\nUNIQUE(src,tgt,relation)\nweight · first_seen · last_seen")]
+        D5[("D5 · edge_sources\nedge_id -> document_id\nsnippet · extracted_at")]
+    end
+
+    subgraph SERVE["Query & Presentation"]
+        P8["P8 · Query Engine\nanalysis.py\nnetwork() · emerging() · central() · edge_sources()"]
+        P9["P9 · HTTP API\napi.py — FastAPI"]
+        P10["P10 · Web UI\nstatic/index.html\nvis-network, served at /"]
+    end
+
+    ANALYST(["Analyst / Browser"])
+
+    CFG --> P1
+    CFG --> P4
+    CFG --> P8
+    WEB -->|"HTML / XML / JSON"| P1
+    P1 -->|"RawPage records"| D1
+    D1 --> P2
+    P2 --> P2b
+    P2b -->|"NormalizedDocument + comments[]"| P3
+    P3 -->|"deduped, boilerplate-stripped docs"| D2
+    D2 -->|"unprocessed documents"| P4
+    P4 -->|"resolved entities[]"| P5
+    P4 -->|"resolved entities[]"| P6
+    P5 -->|"typed Rel[]"| P7
+    P6 -->|"responded_to Rel[] (structural)"| P7
+    P7 --> D3
+    P7 --> D4
+    P7 --> D5
+    D3 --> P8
+    D4 --> P8
+    D5 --> P8
+    D2 -.->|"title/url for provenance joins"| P8
+    P8 --> P9
+    P9 --> P10
+    ANALYST -->|"GET /entity, /connections, /entities, /edges"| P9
+    P9 -->|"JSON"| ANALYST
+    ANALYST -->|"GET /"| P10
+    P10 -->|"renders graph, calls P9 endpoints client-side"| ANALYST
+```
+
+**Store reference table**
+
+| Store | Table / Path      | Key columns                                      | Answers                                                                  |
+| ----- | ----------------- | ------------------------------------------------ | ------------------------------------------------------------------------ |
+| D1    | `data/raw/*.json` | url, html, markdown                              | "What did the crawler actually fetch, without re-hitting the network?"   |
+| D2    | `documents`       | `source_url` UNIQUE, `content_hash`              | "Is this exact content already stored?"                                  |
+| D3    | `nodes`           | `canonical_name` UNIQUE, `type_votes`, `aliases` | "What type does the majority of evidence support?"                       |
+| D4    | `edges`           | `UNIQUE(source,target,relation)`, `weight`       | "How strong / frequent is this connection?"                              |
+| D5    | `edge_sources`    | `edge_id -> document_id`, `snippet`, `extracted_at` | "According to what, and when?"                                        |
+
+#### 1.3 Level 2 — Inside Extraction (P4 + P5 + P6)
+
+```mermaid
+flowchart TB
+    IN["NormalizedDocument\ntitle + body (+ comments[] if thread)"]
+
+    IN -->|"has structured comments?"| SPLIT{"doc.comments\nnon-empty?"}
+    SPLIT -->|"yes: title only"| TITLEONLY["text = title\n(avoids double-processing\ncomment text — see note)"]
+    SPLIT -->|"no: full body"| FULLBODY["text = title + body"]
+
+    TITLEONLY --> LB["Line-Boundary Normalization\nforce terminal punctuation per line\n(prevents headline-fusion into one sentence)"]
+    FULLBODY --> LB
+
+    LB --> NER["spaCy NER pass\nPERSON/ORG/GPE/LOC/NORP/EVENT/FAC"]
+    LB --> HANDLE["@handle regex pass"]
+    LB --> CHUNK["noun-chunk TOPIC pass\n(non-NER spans only)"]
+
+    NER --> RESOLVE["EntityRegistry.resolve()\n1. ignore_entities denylist\n2. exact / alias match\n3. surname merge (PERSON only)\n4. fuzzy match (LOCATION excluded)\n5. register new canonical"]
+    HANDLE --> RESOLVE
+    CHUNK --> RESOLVE
+
+    RESOLVE --> VOTE["type_votes[entity_type] += 1\nwinning_type = argmax(votes)"]
+
+    VOTE --> SENT["Per-sentence entity list"]
+    SENT --> VERB["Verb dependency roles\nnsubj/dobj/prep-object\n(quote-topic preps only for speech verbs)"]
+    SENT --> APPOS["Appositive pattern\n(X, CEO of Y)"]
+    SENT --> CAP{"entity count\n> 8 in sentence?"}
+    CAP -->|"yes"| SKIP["Skip pairwise fallback\n(dense line: table/caption/list)"]
+    CAP -->|"no"| COOC["Pairwise mentioned_with\nfallback for unconnected pairs"]
+
+    VERB --> OUT["Rel[] : (src, tgt, type, evidence)"]
+    APPOS --> OUT
+    COOC --> OUT
+
+    COMMENTS["doc.comments[]\n(if thread page)"] --> STRUCT["Structural responded_to\nauthor -> parent_author\n(ground truth, zero NLP)"]
+    COMMENTS --> PERCOMMENT["Per-comment NLP pass\n(same pipeline as above,\nscoped to one comment's text)"]
+    STRUCT --> OUT
+    PERCOMMENT --> OUT
+```
+
+> **Why `text = title` only when comments exist**: `crawl4ai` renders an entire HN/Reddit thread page — title *and every comment* — as one flat markdown blob (`doc.body`). Running NLP over the full body **and** separately over each parsed comment double-processed every comment's text, inflating edge weight. Verified fix: 32–70% edge-count reduction across 8 threads on identical cached pages, before vs. after.
+
+### 2. Sequence Diagrams
+
+#### 2.1 Full pipeline run — `media-intel-pipeline all`
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Operator
+    participant CLI as main.py
+    participant PL as pipeline.py
+    participant CR as crawler.py
+    participant C4 as crawl4ai (Playwright)
+    participant HTTP as urllib (direct fetch)
+    participant NM as normalizer.py
+    participant TH as threads.py
+    participant EN as entities.py
+    participant RL as relations.py
+    participant DB as storage.py (SQLite)
+
+    Operator->>CLI: media-intel-pipeline all --config config.yaml
+    CLI->>PL: run(config_path, skip_crawl=False)
+    PL->>DB: load_entity_rows() → rebuild EntityRegistry
+    PL->>EN: seed_manual(manual_aliases, manual_types)
+
+    PL->>CR: crawl_all(config)
+    loop each seed
+        alt seed URL is an XML/RSS feed
+            CR->>HTTP: GET feed (bypasses browser —<br/>Chromium rewrites raw XML into its<br/>own tree-viewer DOM, destroying <link> text)
+            HTTP-->>CR: raw XML text
+            CR->>CR: extract_feed_article_links() via regex
+            CR->>CR: enqueue article links (same depth, no hop penalty)
+        else normal page
+            CR->>C4: arun(url)
+            C4-->>CR: html, markdown, links, title
+            CR->>CR: is_crawlable_content_link()?<br/>(structural listing-page filter,<br/>not a per-site denylist)
+            CR->>CR: enqueue passing links at depth+1
+        end
+        CR->>CR: save_raw_page() → data/raw/*.json cache
+    end
+    CR-->>PL: List[RawPage]
+
+    PL->>NM: normalize(raw) for each page
+    NM->>NM: Reddit .json? → structured parse<br/>else → markdown clean + boilerplate strip
+    NM->>TH: _maybe_parse_thread(raw)<br/>(HN item? Reddit comments page?)
+    TH-->>NM: op_author, comments[]
+    NM-->>PL: NormalizedDocument
+
+    PL->>PL: _strip_cross_document_boilerplate()<br/>(per source_type, >=60% line frequency)
+
+    loop each document (dedup by content_hash)
+        PL->>DB: upsert_document(doc)
+        alt doc.comments non-empty
+            PL->>EN: process(title only)
+        else
+            PL->>EN: process(title + body)
+        end
+        EN-->>PL: sentence → entities[] pairs
+        PL->>RL: extract_sentence_relations(sent, entities)
+        RL-->>PL: Rel[] (typed, capped at 8 entities/sentence)
+        PL->>DB: get_or_create_node() + add_edge() per Rel
+
+        opt doc.comments non-empty
+            loop each comment
+                PL->>DB: ensure_node(comment.author)
+                PL->>DB: add_edge("responded_to", author, parent_author)<br/>— structural, zero NLP
+                PL->>EN: process(comment.text)
+                EN-->>PL: sentence → entities[] pairs
+                PL->>RL: extract_sentence_relations(...)
+                RL-->>PL: Rel[]
+                PL->>DB: add_edge() per Rel, snippet prefixed<br/>with "[comment by author]"
+            end
+        end
+    end
+
+    PL-->>CLI: pipeline run complete
+    CLI-->>Operator: log summary (docs, edges, warnings)
+```
+
+#### 2.2 Inside `storage.py` — one relation becoming a cited, weighted edge
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PL as pipeline.py
+    participant REG as EntityRegistry
+    participant DB as GraphStore (SQLite)
+
+    PL->>REG: resolve(raw_text, entity_type)
+    REG->>REG: ignore_entities check
+    REG->>REG: exact / alias match
+    alt no match, single-token PERSON
+        REG->>REG: surname merge against existing multi-token PERSON
+    end
+    alt still no match, type != LOCATION
+        REG->>REG: fuzzy match (difflib >= 0.90)
+    end
+    REG-->>PL: canonical_name
+
+    PL->>DB: get_or_create_node(canonical_name, type, aliases, ts)
+    alt node exists
+        DB->>DB: type_votes[type] += 1
+        DB->>DB: winning_type = argmax(type_votes)
+        DB->>DB: UPDATE nodes SET entity_type=winning_type,<br/>mention_count+=1, aliases=merged, last_seen=ts
+    else new node
+        DB->>DB: INSERT nodes (type_votes={type:1}, mention_count=1)
+    end
+    DB-->>PL: node_id
+
+    PL->>DB: add_edge(relation_type, src_id, tgt_id, ts, doc_id, snippet)
+    alt relation_type is undirected (mentioned_with)
+        DB->>DB: canonicalize (src_id < tgt_id)
+    end
+    alt edge exists
+        DB->>DB: UPDATE edges SET weight+=1, last_seen=ts
+    else new edge
+        DB->>DB: INSERT edges (weight=1, first_seen=ts, last_seen=ts)
+    end
+    DB->>DB: INSERT edge_sources (edge_id, document_id, snippet, extracted_at=ts)
+    DB-->>PL: edge_id
+```
+
+#### 2.3 `GET /entity/{name}/network` — API + Browser UI
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Analyst
+    participant UI as index.html (vis-network)
+    participant API as api.py
+    participant AN as analysis.py
+    participant DB as SQLite
+
+    Analyst->>UI: types "Donald Trump", clicks Search
+    UI->>API: GET /entity/Donald%20Trump/network?depth2=true&exclude_relations=mentioned_with&min_weight=0
+    API->>AN: entity_network(conn, name, depth2, exclude, min_weight)
+    AN->>DB: find_node(name)<br/>exact → alias → substring fallback
+    alt not found
+        DB-->>AN: None
+        AN-->>API: None
+        API-->>UI: 404 {detail: "Entity 'X' not found"}
+        UI->>UI: showError("X not found")
+    else found
+        DB-->>AN: center node
+        AN->>DB: _neighbors(center.id) — depth 1
+        AN->>AN: filter by exclude_relations, min_weight
+        loop each depth-1 node
+            AN->>DB: _neighbors(node.id) — depth 2
+            AN->>AN: filter, dedupe by edge_id
+        end
+        AN-->>API: {center, nodes[], edges[] with id/relation/weight/depth}
+        API-->>UI: 200 JSON
+        UI->>UI: renderGraph(data)<br/>vis.DataSet nodes/edges, physics layout
+        UI->>UI: requestAnimationFrame → redraw() + fit()<br/>(guards against flex-container 0-height race)
+        Analyst->>UI: clicks an edge
+        UI->>API: GET /edges/{edge_id}/sources
+        API->>AN: edge_sources(conn, edge_id)
+        AN->>DB: JOIN edge_sources -> documents WHERE edge_id=?
+        DB-->>AN: [{snippet, extracted_at, source_url, title}]
+        AN-->>API: sources[]
+        API-->>UI: 200 JSON
+        UI->>UI: render sources panel
+    end
+```
+
+#### 2.4 `GET /connections/new` — emerging connection detection
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Analyst
+    participant API as api.py
+    participant AN as analysis.py
+    participant DB as SQLite
+
+    Analyst->>API: GET /connections/new?since=2026-10-07T20:00:00&min_absolute=2&growth_ratio=1.5
+    API->>AN: emerging_connections(conn, since, min_absolute, growth_ratio, limit)
+    AN->>DB: SELECT all edges (id, src, tgt, relation, weight)
+    loop each edge
+        AN->>DB: COUNT(edge_sources) WHERE extracted_at < since   → before
+        AN->>DB: COUNT(edge_sources) WHERE extracted_at >= since  → after
+        alt after == 0
+            AN->>AN: discard (no recent activity)
+        else before == 0
+            AN->>AN: status = "new"
+        else after >= before*growth_ratio AND after-before >= min_absolute
+            AN->>AN: status = "grown"
+        else
+            AN->>AN: discard (growth insufficient)
+        end
+    end
+    AN->>AN: sort by (is_new, after-before) descending
+    AN-->>API: connections[] (status, mentions_before, mentions_after)
+    API-->>Analyst: 200 JSON {since, count, connections[]}
+
+    Note over AN,DB: On a single-session crawl, every edge's "before"<br/>count is 0 by construction — every result is "new".<br/>This is an honest, demonstrated limitation of testing<br/>this endpoint against one-shot data, not a bug.
+```
+
+#### 2.5 `GET /entities/central` — centrality ranking
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Analyst
+    participant API as api.py
+    participant AN as analysis.py
+    participant DB as SQLite
+
+    Analyst->>API: GET /entities/central?limit=20&exclude_relations=mentioned_with
+    API->>AN: central_entities(conn, limit, entity_type, exclude_relations)
+    AN->>DB: SELECT all nodes
+    AN->>DB: SELECT all edges (filtered: exclude_relations removed)
+    AN->>AN: build adjacency map + direct_pairs set
+    loop each node
+        AN->>AN: degree = len(neighbors)
+        AN->>AN: distinct_relation_types = unique rel types across neighbors
+        alt neighbor count <= 250
+            AN->>AN: bridge_pairs = count of neighbor-pairs NOT directly connected
+        else
+            AN->>AN: bridge_capped = true (skip O(d^2) computation)
+        end
+        AN->>AN: score = degree + 0.5*types + 2.0*bridge_pairs
+    end
+    AN->>AN: sort by score descending
+    AN-->>API: entities[] (name, type, degree, bridge_pairs, score)
+    API-->>Analyst: 200 JSON
+```
+
+#### 2.6 Browser UI — full page load to first render
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Analyst
+    participant Browser
+    participant API as api.py (FastAPI)
+    participant CDN as jsdelivr CDN
+
+    Analyst->>Browser: navigates to http://host:8000/
+    Browser->>API: GET /
+    API-->>Browser: 200 index.html (inline CSS/JS)
+    Browser->>CDN: GET vis-network@9.1.9 (standalone UMD)
+    alt CDN unreachable
+        CDN--xBrowser: load error
+        Browser->>Browser: onerror handler → red banner:<br/>"Failed to load vis-network from CDN"
+    else CDN reachable
+        CDN-->>Browser: vis-network.min.js
+        Browser->>Browser: loadCentral() fires on page load
+        Browser->>API: GET /entities/central?limit=15&exclude_relations=mentioned_with
+        API-->>Browser: 200 JSON
+        Browser->>Browser: render sidebar list (data-name attrs,<br/>delegated click handler — no inline onclick)
+        Analyst->>Browser: clicks a central entity
+        Browser->>Browser: loadNetwork(name) → fetch /entity/{name}/network
+        Browser->>Browser: renderGraph(data)<br/>container height guard + requestAnimationFrame redraw
+    end
+```
+
+---
+
+## Design Notes Encoded in These Diagrams
+
+| Diagram ref | Captures this real, verified decision                                                                                                                                                                    |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DFD L1, P1  | Direct HTTP fetch for feeds bypasses `crawl4ai`'s browser — Chromium rewrites raw XML into its own viewer DOM before any link-extraction regex can see the original `<link>` tags.                      |
+| DFD L1, P3  | Boilerplate stripping is scoped **per `source_type`**, not globally — a phrase that's nav chrome on Al Jazeera's template has no bearing on whether it's noise on Reddit.                                |
+| DFD L2      | `MAX_ENTITIES_FOR_COOCCURRENCE` cap only suppresses the quadratic pairwise fallback, never the linear verb/appositive relations — a dense line still contributes its high-confidence typed edges.       |
+| DFD L2      | Fuzzy matching is excluded for `LOCATION` entirely — found in production to silently merge "South Africa" into "South America" at exactly the 0.88 similarity cutoff.                                   |
+| Seq 2.1     | `text = title only` when a document has structured comments — the fix for a confirmed 32–70% edge-count inflation from double-processing comment text.                                                  |
+| Seq 2.2     | Type is decided by `argmax(type_votes)` on every mention, not frozen at first sight — self-corrects an early NER mistag over the document's lifetime.                                                   |
+| Seq 2.3     | `find_node` has a three-tier fallback (exact → alias → substring) — verified in practice: searching `"Donald"` correctly resolves to `"Donald Trump"`.                                                  |
+| Seq 2.3     | The `requestAnimationFrame` redraw+fit is a direct fix for a reproduced flexbox `min-height:0` collapse bug that silently produced a zero-size canvas with no thrown error.                             |
+| Seq 2.4     | Explicitly documents that a single-session crawl makes every result `"new"` by construction — an honest limitation, not a hidden one.                                                                   |
+| Seq 2.5     | `bridge_capped` flag surfaces exactly when the O(d²) betweenness proxy was skipped for a high-degree node, rather than silently returning an incomplete number.                                          |
+
+---
+
+## Why Three Sources, and What Each One Actually Is
 
 - **News — Al Jazeera** (`aljazeera.com`, via its public RSS feed as a static sitemap, see below)
 - **Discussion — Hacker News** (front page + individual story threads, including full comment trees)
@@ -133,9 +566,15 @@ analysis.py + api.py ── FastAPI query layer
 
 This satisfies the brief's requirement with HN alone covering "discussion/social"; Reddit was kept as the distinct third angle specifically because it surfaces a different vocabulary and entity mix (product/brand mentions, crowd reaction) than either Al Jazeera's institutional framing or HN's practitioner commentary.
 
+---
+
 ## UI
 
-A minimal graph-exploration interface is mounted at `/` — start the API (`uv run uvicorn media_intel.api:app --reload`) and open`http://127.0.0.1:8000/` in a browser. It is a single static HTML file with inline JS(vis-network via CDN, no build step), acting purely as a client over the four endpoints above: search any entity to see its live network graph, click a node to re-center on it, click an edge to see its exact source sentence(s), browse the centrality ranking, and query emerging connections by timestamp.
+A minimal graph-exploration interface is mounted at `/` — start the API (`uv run uvicorn media_intel.api:app --reload`) and open `http://127.0.0.1:8000/` in a browser. It is a single static HTML file with inline JS (vis-network via CDN, no build step), acting purely as a client over the four endpoints above: search any entity to see its live network graph, click a node to re-center on it, click an edge to see its exact source sentence(s), browse the centrality ranking, and query emerging connections by timestamp.
+
+---
+
+## Crawling Obstacles
 
 ### A real crawling obstacle, solved properly: Al Jazeera's navigation is JavaScript-rendered
 
@@ -151,7 +590,7 @@ All three were handled by the same code path: `try/except` around `crawler.arun(
 
 ---
 
-## Entity normalization — design and how it actually broke
+## Entity Normalization — Design and How It Actually Broke
 
 ### Design
 
@@ -191,7 +630,7 @@ Two separate entities ended up typed as **ORG** in `/entities/central` output de
 
 ### Real failure #4 (found, fixed): UI chrome glued onto a real name
 
-```
+```json
 "name": "Share Harmanpreet Kaur", "type": "PERSON", "degree": 68
 ```
 
@@ -209,7 +648,7 @@ Al Jazeera's markdown rendering placed a "Share" button label directly adjacent 
 
 ---
 
-## Relationship extraction — design and how it actually broke
+## Relationship Extraction — Design and How It Actually Broke
 
 ### Design (`relations.py`)
 
@@ -260,15 +699,15 @@ Root cause: `crawl4ai` renders an entire HN item page (title + all comments) as 
 **Fix**: when a document has structured comments (`doc.comments` non-empty), the main body-level NLP pass is restricted to the title only; all comment-derived extraction happens exclusively through the dedicated per-comment loop. Verified with exact before/after edge counts across 8 HN threads on the same cached pages:
 
 | Thread             | Before fix | After fix | Reduction |
-| ------------------ | ---------- | --------- | --------- |
-| `item?id=49996437` | 522        | 159       | −70%      |
-| `item?id=49998895` | 273        | 163       | −40%      |
-| `item?id=49996425` | 407        | 153       | −62%      |
-| `item?id=49996259` | 384        | 170       | −56%      |
-| `item?id=49994443` | 167        | 85        | −49%      |
-| `item?id=49969073` | 547        | 370       | −32%      |
-| `item?id=49997073` | 191        | 111       | −42%      |
-| `item?id=49991227` | 788        | 379       | −52%      |
+| ------------------ | ---------: | --------: | --------: |
+| `item?id=49996437` |        522 |       159 |      −70% |
+| `item?id=49998895` |        273 |       163 |      −40% |
+| `item?id=49996425` |        407 |       153 |      −62% |
+| `item?id=49996259` |        384 |       170 |      −56% |
+| `item?id=49994443` |        167 |        85 |      −49% |
+| `item?id=49969073` |        547 |       370 |      −32% |
+| `item?id=49997073` |        191 |       111 |      −42% |
+| `item?id=49991227` |        788 |       379 |      −52% |
 
 Corpus-wide: total nodes fell 2338→1829, `mentioned_with` edges fell 3223→2542 — consistent with eliminating systematic double-counting rather than random variance.
 
@@ -285,7 +724,7 @@ The line-boundary fix (forcing every markdown line to end in terminal punctuatio
 
 ---
 
-## Storage schema
+## Storage Schema
 
 ```sql
 documents(id, source_url UNIQUE, source_type, scraped_at, title, body,
@@ -308,7 +747,7 @@ Documents are deduplicated by `content_hash` (hash of URL + first 500 chars of b
 
 ---
 
-## API endpoints
+## API Endpoints
 
 ### `GET /entity/{name}/network?depth2=true&exclude_relations=mentioned_with&min_weight=0`
 
@@ -344,7 +783,7 @@ score = degree + 0.5 × distinct_relation_types + 2.0 × bridge_pairs
 
 ---
 
-## Phase 4 — The hard questions
+## Phase 4 — The Hard Questions
 
 ### Walk through one real relationship your system extracted. Is it correct?
 
@@ -352,7 +791,13 @@ score = degree + 0.5 × distinct_relation_types + 2.0 × bridge_pairs
 
 ### How does your entity normalization break? Give a concrete example from your actual scraped data.
 
-Documented in full above with five distinct, real examples: the South Africa/South America fuzzy-merge at exactly the 0.88 difflib cutoff (fixed by excluding LOCATION from fuzzy matching), the Christa Pike/"Pike" surname-merge gate failing when NER mistags the bare surname as ORG (documented, not fixed — risk of new false merges outweighs the benefit), Franklin and Trump both mistyped as ORG via legitimate majority-vote outcomes on ambiguous mention sets (documented as a generalizable type-voting limitation), the "Share Harmanpreet Kaur" UI-prefix pollution (fixed — regex assumed zero whitespace, real data had a space), and the "Ursula von der"/"Leyen" surname split (documented as an inherent, well-known NER model limitation on multi-particle European surnames, not a bug in this codebase).
+Documented in full above with five distinct, real examples:
+
+1. The South Africa/South America fuzzy-merge at exactly the 0.88 difflib cutoff (**fixed** by excluding LOCATION from fuzzy matching).
+2. The Christa Pike/"Pike" surname-merge gate failing when NER mistags the bare surname as ORG (**documented, not fixed** — risk of new false merges outweighs the benefit).
+3. Franklin and Trump both mistyped as ORG via legitimate majority-vote outcomes on ambiguous mention sets (**documented** as a generalizable type-voting limitation).
+4. The "Share Harmanpreet Kaur" UI-prefix pollution (**fixed** — regex assumed zero whitespace, real data had a space).
+5. The "Ursula von der"/"Leyen" surname split (**documented** as an inherent, well-known NER model limitation on multi-particle European surnames, not a bug in this codebase).
 
 ### Your graph will have noise. How would you detect and suppress it at scale?
 
