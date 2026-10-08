@@ -5,6 +5,7 @@ A pipeline that crawls real news, discussion, and social content, extracts named
 This README documents what was actually built, what actually broke during development against real scraped data, and the specific, evidence-backed decisions made in response. Every claim in Phase 4 references a concrete example from this project's own crawl output — not hypothetical failure modes.
 
 ---
+
 ## Setup
 
 Requires Python 3.12 and [`uv`](https://docs.astral.sh/uv/). Only the
@@ -14,9 +15,9 @@ everywhere.
 
 ### 1. Install `uv`
 
-| OS | Command |
-|---|---|
-| macOS / Linux | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| OS                   | Command                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| macOS / Linux        | `curl -LsSf https://astral.sh/uv/install.sh \| sh`                                    |
 | Windows (PowerShell) | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
 
 Restart your shell after install so `uv` is on `PATH`.
@@ -32,11 +33,13 @@ uv run python -m playwright install chromium
 What happens next depends on your OS:
 
 **Ubuntu / Debian** — `apt` exists, so Playwright's own installer handles everything:
+
 ```bash
 uv run python -m playwright install-deps chromium
 ```
 
 **Fedora / RHEL / CentOS** — no `apt`, so install the Chromium runtime libraries manually via `dnf`:
+
 ```bash
 sudo dnf install -y python3-devel gcc gcc-c++ make redhat-rpm-config \
   nss nspr atk at-spi2-atk at-spi2-core cups-libs libdrm libxkbcommon \
@@ -45,6 +48,7 @@ sudo dnf install -y python3-devel gcc gcc-c++ make redhat-rpm-config \
 ```
 
 **Arch / Manjaro**:
+
 ```bash
 sudo pacman -S --needed nss nspr atk at-spi2-atk at-spi2-core cups \
   libdrm libxkbcommon libxcomposite libxdamage libxfixes libxrandr \
@@ -78,11 +82,12 @@ uv run uvicorn media_intel.api:app --reload
 
 This README uses Unix shell syntax throughout (`rm -rf data/raw data/media_intel.db`). PowerShell equivalents:
 
-| Unix | PowerShell |
-|---|---|
-| `rm -rf data/raw data/media_intel.db` | `Remove-Item -Recurse -Force data/raw, data/media_intel.db -ErrorAction SilentlyContinue` |
-| `sqlite3 data/media_intel.db "SELECT ..."` | same, if `sqlite3.exe` is on `PATH` ([download](https://www.sqlite.org/download.html)) |
-| `curl -s "http://..." \| python3 -m json.tool` | `Invoke-RestMethod "http://..." \| ConvertTo-Json -Depth 10` |
+| Unix                                           | PowerShell                                                                                |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `rm -rf data/raw data/media_intel.db`          | `Remove-Item -Recurse -Force data/raw, data/media_intel.db -ErrorAction SilentlyContinue` |
+| `sqlite3 data/media_intel.db "SELECT ..."`     | same, if `sqlite3.exe` is on `PATH` ([download](https://www.sqlite.org/download.html))    |
+| `curl -s "http://..." \| python3 -m json.tool` | `Invoke-RestMethod "http://..." \| ConvertTo-Json -Depth 10`                              |
+
 Swap `config.yaml`'s `seeds` list (and matching `domain_whitelist` entries) and re-run `all` — nothing in the code references a URL directly. This was verified in practice multiple times during development: seeds were swapped from Reuters → Al Jazeera, and from a direct Reddit scrape → Reddit's `.json` endpoint → a brief Lemmy attempt → back to Reddit `.json`, with zero code changes required each time.
 
 ---
@@ -128,6 +133,10 @@ analysis.py + api.py ── FastAPI query layer
 
 This satisfies the brief's requirement with HN alone covering "discussion/social"; Reddit was kept as the distinct third angle specifically because it surfaces a different vocabulary and entity mix (product/brand mentions, crowd reaction) than either Al Jazeera's institutional framing or HN's practitioner commentary.
 
+## UI
+
+A minimal graph-exploration interface is mounted at `/` — start the API (`uv run uvicorn media_intel.api:app --reload`) and open`http://127.0.0.1:8000/` in a browser. It is a single static HTML file with inline JS(vis-network via CDN, no build step), acting purely as a client over the four endpoints above: search any entity to see its live network graph, click a node to re-center on it, click an edge to see its exact source sentence(s), browse the centrality ranking, and query emerging connections by timestamp.
+
 ### A real crawling obstacle, solved properly: Al Jazeera's navigation is JavaScript-rendered
 
 Early crawls repeatedly discovered only section/category pages (`/sports/`, `/economy/`, `/tag/...`) and never a single dated article, because Al Jazeera's homepage renders its article teaser links via client-side JS hydration — `crawl4ai`'s captured HTML only contains static chrome at fetch time. The fix was not to fight JS rendering, but to recognize that the site's own RSS feed (`/xml/rss/all.xml`) is a clean, static, pre-rendered list of current article URLs — exactly the sitemap the site provides for syndication. `crawler.py` fetches feed URLs with a direct `urllib` GET (bypassing the browser entirely, since Chromium's built-in XML viewer rewrites `<link>` tags into syntax-highlighting markup and destroys the very text being parsed), extracts article links via regex, and feeds them into the normal crawl queue. This consistently surfaced 20-27 real article links per run.
@@ -150,7 +159,7 @@ All three were handled by the same code path: `try/except` around `crawler.arun(
 
 1. **Exact match** against a canonical name or any previously-seen alias (case-insensitive).
 2. **Single-token PERSON surname merge**: a bare mention like "Musk" maps onto the most recently registered multi-token PERSON sharing that surname ("Elon Musk").
-3. **Fuzzy match** (`difflib` ratio ≥ 0.90) against canonical names of the *same entity type* — **except LOCATION**, which is excluded from fuzzy matching entirely (see below).
+3. **Fuzzy match** (`difflib` ratio ≥ 0.90) against canonical names of the _same entity type_ — **except LOCATION**, which is excluded from fuzzy matching entirely (see below).
 4. Otherwise, register as a new canonical entity.
 
 `@handles` are stripped of `@` before any of this runs, so `"@elonmusk"` is treated identically to plain text `"elonmusk"` and goes through the same surname/fuzzy pipeline. `manual_aliases`/`manual_types` in `config.yaml` can pre-seed known entities before any crawled text is processed, so alias variants resolve consistently regardless of which variant a given run encounters first.
@@ -172,9 +181,9 @@ The source text says **South Africa**. The stored entity is **South America** �
 
 ### Real failure #2 (found, documented, left unfixed): "Christa Pike" vs. "Pike" never merge
 
-In a death-row execution story, the registry produced two separate nodes: `"Christa Pike"` (PERSON) and `"Pike"` (ORG). The surname-merge logic (`EntityRegistry.resolve`, step 2 above) only attempts a surname lookup `if etype == "PERSON"` — but on at least one mention, spaCy's small model mistagged the bare surname "Pike" as an organization (plausible: a capitalized single surname with no honorific, no verb context, and no surrounding person-indicating signal is a known confusion point for `en_core_web_sm`). Because the merge path is gated on the *current* mention's type, not the canonical type the word *should* have, the ORG-tagged "Pike" skips the surname-merge check entirely and becomes a new, wrongly-typed, disconnected node.
+In a death-row execution story, the registry produced two separate nodes: `"Christa Pike"` (PERSON) and `"Pike"` (ORG). The surname-merge logic (`EntityRegistry.resolve`, step 2 above) only attempts a surname lookup `if etype == "PERSON"` — but on at least one mention, spaCy's small model mistagged the bare surname "Pike" as an organization (plausible: a capitalized single surname with no honorific, no verb context, and no surrounding person-indicating signal is a known confusion point for `en_core_web_sm`). Because the merge path is gated on the _current_ mention's type, not the canonical type the word _should_ have, the ORG-tagged "Pike" skips the surname-merge check entirely and becomes a new, wrongly-typed, disconnected node.
 
-This is left unfixed deliberately: broadening the surname-merge check to run regardless of the current mention's NER type risks new false merges (e.g., merging a person's surname with an unrelated organization that happens to share the string). The safer fix — type-aware surname merging that also considers the *target* node's type, not just the source mention's type — would need more careful design and testing than the remaining project time allowed. Documented here as a known, understood limitation rather than patched hastily.
+This is left unfixed deliberately: broadening the surname-merge check to run regardless of the current mention's NER type risks new false merges (e.g., merging a person's surname with an unrelated organization that happens to share the string). The safer fix — type-aware surname merging that also considers the _target_ node's type, not just the source mention's type — would need more careful design and testing than the remaining project time allowed. Documented here as a known, understood limitation rather than patched hastily.
 
 ### Real failure #3 (found, documented): type-voting produced wrong winners for "Franklin" and "Trump"
 
@@ -206,14 +215,14 @@ Al Jazeera's markdown rendering placed a "Share" button label directly adjacent 
 
 Relations are extracted per-sentence via spaCy's dependency parse, in priority order:
 
-| Relation | Detection rule |
-|---|---|
-| `accused_of` | entity is `nsubj`/`nsubjpass` of a verb lemma in `{accuse, blame}`; other entity is the verb's object |
-| `responded_to` (NLP-derived) | entity is subject of `{respond, reply, react}` |
-| `responded_to` (structural) | HN/Reddit comment author → parent comment author or OP, from DOM/markup structure directly (`threads.py`) — zero NLP involved, ground-truth direction |
-| `quoted` | entity is subject of a speech verb (`say, tell, claim, announce, ...`); object is restricted to the verb's direct object OR a prepositional object introduced specifically by `about/regarding/on/over/concerning` (see failure below for why this restriction exists) |
-| `affiliated_with` | `appos` dependency between two entities ("OpenAI CEO Sam Altman"), or subject/object of `{join, lead, head, run, own, found, chair, represent, work}` |
-| `mentioned_with` | fallback: co-occurrence in the same sentence with no verb/appos pattern connecting them, capped at 8 entities per sentence (see below) |
+| Relation                     | Detection rule                                                                                                                                                                                                                                                         |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `accused_of`                 | entity is `nsubj`/`nsubjpass` of a verb lemma in `{accuse, blame}`; other entity is the verb's object                                                                                                                                                                  |
+| `responded_to` (NLP-derived) | entity is subject of `{respond, reply, react}`                                                                                                                                                                                                                         |
+| `responded_to` (structural)  | HN/Reddit comment author → parent comment author or OP, from DOM/markup structure directly (`threads.py`) — zero NLP involved, ground-truth direction                                                                                                                  |
+| `quoted`                     | entity is subject of a speech verb (`say, tell, claim, announce, ...`); object is restricted to the verb's direct object OR a prepositional object introduced specifically by `about/regarding/on/over/concerning` (see failure below for why this restriction exists) |
+| `affiliated_with`            | `appos` dependency between two entities ("OpenAI CEO Sam Altman"), or subject/object of `{join, lead, head, run, own, found, chair, represent, work}`                                                                                                                  |
+| `mentioned_with`             | fallback: co-occurrence in the same sentence with no verb/appos pattern connecting them, capped at 8 entities per sentence (see below)                                                                                                                                 |
 
 ### Real failure #6 (found, fixed): a single quote sentence fanned out into five spurious edges
 
@@ -225,7 +234,7 @@ Relations are extracted per-sentence via spaCy's dependency parse, in priority o
 [quoted] Healy -> Australia
 ```
 
-All five edges were extracted from **one sentence**: *"'...has been amazing to watch,' Healy said in 2023, before India's Test match against Australia at the Wankhede Stadium in Mumbai."* Healy's quote is not *about* Mumbai, India, Australia, or the stadium — those are incidental location/time context attached via `before`, `against`, `at`, `in` prepositions. The original object-harvesting logic treated every prepositional object in the sentence as a candidate "thing quoted about," with no distinction between prepositions that genuinely introduce subject matter versus ones that attach incidental context.
+All five edges were extracted from **one sentence**: _"'...has been amazing to watch,' Healy said in 2023, before India's Test match against Australia at the Wankhede Stadium in Mumbai."_ Healy's quote is not _about_ Mumbai, India, Australia, or the stadium — those are incidental location/time context attached via `before`, `against`, `at`, `in` prepositions. The original object-harvesting logic treated every prepositional object in the sentence as a candidate "thing quoted about," with no distinction between prepositions that genuinely introduce subject matter versus ones that attach incidental context.
 
 **Fix**: for speech verbs specifically, prepositional objects are only harvested when the preposition is in `QUOTE_TOPIC_PREPS = {"about", "regarding", "on", "over", "concerning"}` — everything else is skipped. Verified post-fix via `sample --relation quoted`: this exact sentence no longer produces the Mumbai/India/stadium/Australia fan-out.
 
@@ -233,7 +242,7 @@ All five edges were extracted from **one sentence**: *"'...has been amazing to w
 
 A single real article (a cricket career retrospective) produced **618 edges from one page** on an early run. Root cause: the line-boundary fix that forces every markdown line to be its own spaCy "sentence" (to prevent unrelated headlines from fusing into one sentence — see below) has a side effect on dense lines like image-caption blocks or stats tables: a line with 20-30 distinct entities produces `N×(N-1)/2` pairwise `mentioned_with` edges from the co-occurrence fallback — for N=30, that's 435 edges from a single line.
 
-**Fix**: `MAX_ENTITIES_FOR_COOCCURRENCE = 8` in `relations.py` — the pairwise fallback is skipped entirely for any sentence/line with more than 8 distinct entities. Verb/appos-derived relations are *not* capped (they stay linear in entity count regardless of density), so a dense line can still contribute a handful of high-confidence typed edges; only the quadratic fallback is suppressed. This is a direct implementation of a failure mode the reference architecture under consideration during design explicitly named ("`mentioned_with` flood → lower `max_entities_for_cooccurrence`").
+**Fix**: `MAX_ENTITIES_FOR_COOCCURRENCE = 8` in `relations.py` — the pairwise fallback is skipped entirely for any sentence/line with more than 8 distinct entities. Verb/appos-derived relations are _not_ capped (they stay linear in entity count regardless of density), so a dense line can still contribute a handful of high-confidence typed edges; only the quadratic fallback is suppressed. This is a direct implementation of a failure mode the reference architecture under consideration during design explicitly named ("`mentioned_with` flood → lower `max_entities_for_cooccurrence`").
 
 ### Real failure #8 (found, fixed): HN/Reddit comments were NLP-processed twice
 
@@ -246,20 +255,20 @@ Identical edges appeared twice in `sample` output — once attributed to a speci
   evidence: [1] It was only later, in January 2023, that Mozilla announced...
 ```
 
-Root cause: `crawl4ai` renders an entire HN item page (title + all comments) as one flat markdown blob, which becomes `doc.body`. The pipeline *also* runs NLP separately over each parsed comment via the structural thread extractor (`threads.py`). Every comment's text was therefore processed twice — once inside the full-body NLP pass, once inside the per-comment attributed pass — inflating `weight` on every comment-derived edge.
+Root cause: `crawl4ai` renders an entire HN item page (title + all comments) as one flat markdown blob, which becomes `doc.body`. The pipeline _also_ runs NLP separately over each parsed comment via the structural thread extractor (`threads.py`). Every comment's text was therefore processed twice — once inside the full-body NLP pass, once inside the per-comment attributed pass — inflating `weight` on every comment-derived edge.
 
 **Fix**: when a document has structured comments (`doc.comments` non-empty), the main body-level NLP pass is restricted to the title only; all comment-derived extraction happens exclusively through the dedicated per-comment loop. Verified with exact before/after edge counts across 8 HN threads on the same cached pages:
 
-| Thread | Before fix | After fix | Reduction |
-|---|---|---|---|
-| `item?id=49996437` | 522 | 159 | −70% |
-| `item?id=49998895` | 273 | 163 | −40% |
-| `item?id=49996425` | 407 | 153 | −62% |
-| `item?id=49996259` | 384 | 170 | −56% |
-| `item?id=49994443` | 167 | 85 | −49% |
-| `item?id=49969073` | 547 | 370 | −32% |
-| `item?id=49997073` | 191 | 111 | −42% |
-| `item?id=49991227` | 788 | 379 | −52% |
+| Thread             | Before fix | After fix | Reduction |
+| ------------------ | ---------- | --------- | --------- |
+| `item?id=49996437` | 522        | 159       | −70%      |
+| `item?id=49998895` | 273        | 163       | −40%      |
+| `item?id=49996425` | 407        | 153       | −62%      |
+| `item?id=49996259` | 384        | 170       | −56%      |
+| `item?id=49994443` | 167        | 85        | −49%      |
+| `item?id=49969073` | 547        | 370       | −32%      |
+| `item?id=49997073` | 191        | 111       | −42%      |
+| `item?id=49991227` | 788        | 379       | −52%      |
 
 Corpus-wide: total nodes fell 2338→1829, `mentioned_with` edges fell 3223→2542 — consistent with eliminating systematic double-counting rather than random variance.
 
@@ -313,7 +322,7 @@ Returns every `(snippet, extracted_at, source_url, source_type, title)` tuple ba
 
 An edge qualifies as **new** if it has zero `edge_sources` rows before `since` and at least one after. It qualifies as **grown** if it has rows before `since`, **and** `after >= growth_ratio × before` (default 1.5×), **and** `after - before >= min_absolute` (default 2).
 
-**Why both a ratio and an absolute floor**: a ratio-only check flags a 1→2 occurrence edge as "100% growth," which is indistinguishable from a single incidental re-mention — not a developing story. Requiring both means the endpoint only surfaces edges with a *repeated, non-trivial* increase in co-occurrence (e.g., 3→9), which is what an analyst actually wants flagged as "two entities that weren't linked suddenly appear together repeatedly."
+**Why both a ratio and an absolute floor**: a ratio-only check flags a 1→2 occurrence edge as "100% growth," which is indistinguishable from a single incidental re-mention — not a developing story. Requiring both means the endpoint only surfaces edges with a _repeated, non-trivial_ increase in co-occurrence (e.g., 3→9), which is what an analyst actually wants flagged as "two entities that weren't linked suddenly appear together repeatedly."
 
 **What this definition misses, demonstrated directly**: this project's crawl was a single-session run, so every edge in a real test query returned `"status": "new"` with `mentions_before: 0` — there is no genuine "before" period to compare against within one crawl. This is not a bug; it's an honest limitation of testing "emerging connections" against a one-shot dataset, and is exactly why continuous operation (see below) matters for this endpoint to be useful in practice. A slow, steady accumulation spread across a long window relative to `since` can also fail the ratio test even though the raw numbers are notable — the thresholds are tuned for "sudden burst" stories, not "gradual accumulation" stories.
 
@@ -324,12 +333,12 @@ score = degree + 0.5 × distinct_relation_types + 2.0 × bridge_pairs
 ```
 
 - **`degree`**: number of distinct connected entities — raw connectedness.
-- **`distinct_relation_types`**: how many *different kinds* of relationship this node participates in — rewards an entity that is `quoted`, `accused_of`, and `affiliated_with` others over one that only ever shows up in low-confidence `mentioned_with` edges.
-- **`bridge_pairs`**: among this node's neighbors, how many pairs are *not* directly connected to each other — a cheap, local proxy for betweenness centrality (capped at 250 neighbors per node to bound the O(d²) pair-check on hub nodes, flagged via `bridge_capped` when triggered) that avoids an all-pairs shortest-path computation over the whole graph.
+- **`distinct_relation_types`**: how many _different kinds_ of relationship this node participates in — rewards an entity that is `quoted`, `accused_of`, and `affiliated_with` others over one that only ever shows up in low-confidence `mentioned_with` edges.
+- **`bridge_pairs`**: among this node's neighbors, how many pairs are _not_ directly connected to each other — a cheap, local proxy for betweenness centrality (capped at 250 neighbors per node to bound the O(d²) pair-check on hub nodes, flagged via `bridge_capped` when triggered) that avoids an all-pairs shortest-path computation over the whole graph.
 
 **What this metric misses, demonstrated with real numbers from this project's own data**: unfiltered, `/entities/central?limit=20` returned "US" (LOCATION) with `score: 5999`, driven almost entirely by `bridge_pairs: 2959` — a single heavily-mentioned location dominating purely through co-occurrence breadth, not through any genuinely distinctive role in the graph. Re-running with `exclude_relations=mentioned_with` meaningfully reshuffles this ranking, surfacing entities connected via actual typed relationships (`accused_of`, `affiliated_with`, `quoted`) rather than raw co-occurrence volume. This contrast — shown side-by-side — is the clearest demonstration available of why `mentioned_with` needs to be excludable at query time, not just capped at extraction time.
 
-**What a full betweenness/PageRank implementation would catch that this doesn't**: paths through a node between *distant* node pairs (not just its own immediate neighbors), and it ignores edge weight/recency entirely — a node with 50 one-off `mentioned_with` edges can currently outscore a node with 5 heavily-corroborated `accused_of` edges. This metric was chosen over full betweenness because it's `O(n·d²)` instead of `O(n³)`, stays explainable in one sentence, and is sufficient to separate "hub of the week" from "mentioned once in passing" — which is the actual analyst need the brief describes, not a research-grade centrality ranking.
+**What a full betweenness/PageRank implementation would catch that this doesn't**: paths through a node between _distant_ node pairs (not just its own immediate neighbors), and it ignores edge weight/recency entirely — a node with 50 one-off `mentioned_with` edges can currently outscore a node with 5 heavily-corroborated `accused_of` edges. This metric was chosen over full betweenness because it's `O(n·d²)` instead of `O(n³)`, stays explainable in one sentence, and is sufficient to separate "hub of the week" from "mentioned once in passing" — which is the actual analyst need the brief describes, not a research-grade centrality ranking.
 
 **Positive signal confirming the design works**: real Hacker News usernames (`kennywinker`, `shahidhussain`) appear in the centrality ranking with real degree (21) via `responded_to` edges — direct evidence that the structural thread-reply extraction (`threads.py`) is contributing meaningfully to the graph, not sitting unused.
 
@@ -339,7 +348,7 @@ score = degree + 0.5 × distinct_relation_types + 2.0 × bridge_pairs
 
 ### Walk through one real relationship your system extracted. Is it correct?
 
-**The Healy quote fan-out (relations.py, fixed during development)**: On an Al Jazeera cricket article, the sentence *"'What she has done... has been amazing to watch,' Healy said in 2023, before India's Test match against Australia at the Wankhede Stadium in Mumbai"* originally produced five `quoted` edges: Healy→Mumbai, Healy→India, Healy→the Wankhede Stadium, Healy→india test match, Healy→Australia. All five are **wrong** — Healy's quote is about a cricketer's career, not about Mumbai or the Wankhede Stadium. The bug: the object-harvesting logic for speech verbs treated *any* prepositional object in the sentence as a candidate "thing quoted about," without distinguishing a preposition that introduces subject matter (`about`, `regarding`) from one that attaches incidental location/time context (`before`, `at`, `in`, `against`). Fixed by restricting speech-verb object harvesting to a small whitelist of topic-introducing prepositions. Verified fixed via direct `sample` re-query on the same sentence post-fix.
+**The Healy quote fan-out (relations.py, fixed during development)**: On an Al Jazeera cricket article, the sentence _"'What she has done... has been amazing to watch,' Healy said in 2023, before India's Test match against Australia at the Wankhede Stadium in Mumbai"_ originally produced five `quoted` edges: Healy→Mumbai, Healy→India, Healy→the Wankhede Stadium, Healy→india test match, Healy→Australia. All five are **wrong** — Healy's quote is about a cricketer's career, not about Mumbai or the Wankhede Stadium. The bug: the object-harvesting logic for speech verbs treated _any_ prepositional object in the sentence as a candidate "thing quoted about," without distinguishing a preposition that introduces subject matter (`about`, `regarding`) from one that attaches incidental location/time context (`before`, `at`, `in`, `against`). Fixed by restricting speech-verb object harvesting to a small whitelist of topic-introducing prepositions. Verified fixed via direct `sample` re-query on the same sentence post-fix.
 
 ### How does your entity normalization break? Give a concrete example from your actual scraped data.
 
