@@ -1,0 +1,72 @@
+seeds:
+  - url: "https://www.aljazeera.com/technology/"
+    source_type: "news"
+  - url: "https://news.ycombinator.com/"
+    source_type: "discussion"
+  - url: "https://old.reddit.com/r/technology/.json"
+    source_type: "social"
+  - url: "https://old.reddit.com/r/technology/top/.json?t=week"
+    source_type: "social"
+
+crawl:
+  max_depth: 1
+  domain_whitelist:
+    - aljazeera.com
+    - news.ycombinator.com
+    - old.reddit.com
+    - reddit.com
+  max_pages_per_seed: 12
+  request_delay_seconds: 1.0
+  cache_raw_pages: true
+
+  
+storage:
+  db_path: "data/media_intel.db"
+
+extraction:
+  spacy_model: "en_core_web_sm"
+  min_entity_length: 2
+  max_comments_per_thread: 40
+
+  # Hard denylist for tokens that are grammatically valid entities but are
+  # UI/template chrome, not content. Checked once, at registry.resolve() —
+  # covers NER output, @handle matches, and noun-chunk topics uniformly.
+ 
+  ignore_entities:
+    - "quotes"
+    - "camera"
+    - "play"
+    - "reply"
+    - "live updates"
+    - "breaking"
+    - "opinion"
+    - "explainer"
+    - "hacker news"
+    - "al jazeera"
+    - "reddit"
+    - "privacy policy"
+    - "recommended stories"
+    - "recommended stories list"
+    - "breaking news alert"
+    - "real time breaking news alerts"
+    - "e mail address"
+    - "important headlines"
+    - "video duration"
+    - "al jazeera staff"
+    - "reuters news agency"
+
+  # Pin known entities to a canonical name + aliases up front. This runs
+  # BEFORE any crawled text is resolved, so "Musk", "elonmusk", "Elon" all
+  # resolve to "Elon Musk" from the very first mention — no dependency on
+  # which variant happens to be seen first in a given run.
+  manual_aliases:
+    "Elon Musk": ["Musk", "elonmusk", "Elon"]
+    "Sam Altman": ["Altman", "sama"]
+    "OpenAI": ["Open AI", "openai.com"]
+
+  # Pin a type regardless of what NER votes in. Useful for entities NER
+  # consistently mistags (e.g. "OpenAI" sometimes tagged PERSON by
+  # en_core_web_sm because of its capitalization pattern).
+  manual_types:
+    "OpenAI": "ORG"
+    "Anthropic": "ORG"
