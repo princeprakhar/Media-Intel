@@ -1,17 +1,31 @@
 [project]
-name = "backend"
+name = "media-intel"
 version = "0.1.0"
-description = "Add your description here"
+description = "Media intelligence crawl + entity/relationship graph pipeline"
 readme = "README.md"
 authors = [
     { name = "Prakhar deep", email = "prakhardeep173@gmail.com" }
 ]
-requires-python = ">=3.12"
-dependencies = []
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "crawl4ai>=0.3.0",
+    "spacy>=3.7,<3.8",
+    "numpy>=1.23,<2.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pyyaml>=6.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "en-core-web-sm",
+    "ruff>=0.16.10",
+]
 
 [project.scripts]
-backend = "backend:main"
+media-intel-pipeline = "main:cli"
 
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl" }

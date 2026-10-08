@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 
+
 # Virtual environments
 .venv/
 venv/
@@ -21,3 +22,22 @@ Thumbs.db
 # Databases (if using SQLite locally)
 *.db
 *.sqlite3
+
+
+# Generated at runtime — regenerable by running the pipeline, not source
+data/raw/
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+.results/
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
