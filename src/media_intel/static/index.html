@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Media Intelligence Graph</title>
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"
+        onerror="document.getElementById('errorBanner').textContent='Failed to load vis-network from CDN — check your internet connection or ad-blocker.'; document.getElementById('errorBanner').style.display='block';">
+</script>
+<style>
+  :root {
+    --bg: #fafafa;
+    --panel: #ffffff;
+    --border: #e5e7eb;
+    --text: #1a1d21;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --chip-bg: #f3f4f6;
+    --new-bg: #ecfdf3;
+    --new-text: #15803d;
+    --grown-bg: #fffaeb;
+    --grown-text: #b45309;
+    --danger-bg: #fef2f2;
+    --danger-text: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #sidebar {
+    width: 340px;
+    min-width: 340px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  #main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    background: var(--bg);
+    min-height: 0;
+    min-width: 0;
+  }
+  .section {
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 0 0 12px 0;
+  }
+  input, select, button {
+    font-family: inherit;
+    font-size: 13px;
+  }
+  input[type="text"], input[type="datetime-local"] {
+    width: 100%;
+    margin-bottom: 10px;
+    background: #fff;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus, input[type="datetime-local"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  button {
+    cursor: pointer;
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    font-weight: 600;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 6px;
+    transition: filter 0.15s;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.secondary {
+    background: #fff;
+    border: 1px solid var(--border);
+    color: var(--text);
+    margin-top: 8px;
+    font-weight: 500;
+  }
+  button.secondary:hover { background: var(--chip-bg); filter: none; }
+  label {
+    font-size: 12.5px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 8px 0;
+    cursor: pointer;
+  }
+  input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
+  #graph {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+  #topbar {
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  #topbar b { color: var(--text); font-weight: 600; }
+  .list-item {
+    padding: 9px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 3px;
+    border: 1px solid transparent;
+    color: var(--text);
+  }
+  .list-item:hover { background: var(--accent-soft); border-color: #dbe6fd; }
+  .badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: var(--chip-bg);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .badge.new { background: var(--new-bg); color: var(--new-text); }
+  .badge.grown { background: var(--grown-bg); color: var(--grown-text); }
+  #sourcesPanel {
+    position: absolute;
+    right: 18px;
+    top: 18px;
+    width: 360px;
+    max-height: 70%;
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    display: none;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    z-index: 10;
+  }
+  #sourcesPanel h3 { margin: 0 0 10px 0; font-size: 13px; font-weight: 600; }
+  .source-item {
+    border-top: 1px solid var(--border);
+    padding: 10px 0;
+    font-size: 12.5px;
+  }
+  .source-item:first-child { border-top: none; }
+  .source-item .snippet { color: var(--text); margin-bottom: 5px; line-height: 1.4; }
+  .source-item .meta { color: var(--muted); font-size: 11px; line-height: 1.6; }
+  .source-item a { color: var(--accent); text-decoration: none; }
+  .source-item a:hover { text-decoration: underline; }
+  #errorBanner {
+    display: none;
+    background: var(--danger-bg);
+    color: var(--danger-text);
+    padding: 10px 20px;
+    font-size: 13px;
+    border-bottom: 1px solid #fecaca;
+    flex-shrink: 0;
+  }
+  #errorBanner button {
+    width: auto;
+    padding: 3px 10px;
+    margin-left: 8px;
+    font-size: 12px;
+    display: inline-block;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: var(--muted); }
+  .legend span { display: flex; align-items: center; gap: 5px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div class="section">
+    <h2>Entity Network</h2>
+    <input type="text" id="entityInput" placeholder="e.g. Donald Trump, Christa Pike, Mozilla">
+    <button onclick="loadNetwork()">Search</button>
+    <label><input type="checkbox" id="depth2" checked> Include depth-2 connections</label>
+    <label><input type="checkbox" id="hideMentioned"> Hide low-confidence "mentioned_with" edges</label>
+    <label>Min weight: <input type="text" id="minWeight" value="0" style="width:50px; margin:0;"></label>
+    <button class="secondary" onclick="fitGraph()">Fit to screen</button>
+    <button class="secondary" onclick="resetFilters()">Reset filters</button>
+  </div>
+
+  <div class="section">
+    <h2>Most Central Entities</h2>
+    <label><input type="checkbox" id="centralHideMentioned" checked onchange="loadCentral()"> exclude mentioned_with</label>
+    <div id="centralList">loading…</div>
+  </div>
+
+  <div class="section">
+    <h2>Emerging Connections</h2>
+    <input type="datetime-local" id="sinceInput">
+    <button onclick="loadEmerging()">Find new / grown edges</button>
+    <div id="emergingList" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="section">
+    <h2>Legend</h2>
+    <div class="legend">
+      <span><i class="dot" style="background:#2563eb"></i>PERSON</span>
+      <span><i class="dot" style="background:#ea9226"></i>ORG</span>
+      <span><i class="dot" style="background:#16a34a"></i>LOCATION</span>
+      <span><i class="dot" style="background:#9333ea"></i>TOPIC</span>
+      <span><i class="dot" style="background:#dc2626"></i>EVENT</span>
+      <span><i class="dot" style="background:#ca8a04"></i>GROUP</span>
+    </div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="errorBanner"></div>
+  <div id="topbar">
+    <span>Centered on: <b id="centerLabel">—</b></span>
+    <span id="statsLabel"></span>
+  </div>
+  <div id="graph"></div>
+  <div id="sourcesPanel">
+    <h3 id="sourcesTitle">Edge sources</h3>
+    <div id="sourcesBody"></div>
+    <button class="secondary" onclick="document.getElementById('sourcesPanel').style.display='none'">Close</button>
+  </div>
+</div>
+
+<script>
+const TYPE_COLORS = {
+  PERSON: "#2563eb", ORG: "#ea9226", LOCATION: "#16a34a",
+  TOPIC: "#9333ea", EVENT: "#dc2626", GROUP: "#ca8a04"
+};
+const REL_COLORS = {
+  mentioned_with: "#c7ccd1", affiliated_with: "#0d9488",
+  quoted: "#2563eb", accused_of: "#dc2626", responded_to: "#9333ea"
+};
+
+let network = null;
+
+function showError(msg) {
+  const el = document.getElementById("errorBanner");
+  el.innerHTML = msg;
+  el.style.display = msg ? "block" : "none";
+}
+
+function showErrorWithAction(msg, actionLabel, actionFn) {
+  window.__errorAction = actionFn;
+  showError(`${msg} <button onclick="window.__errorAction()">${actionLabel}</button>`);
+}
+
+function resetFilters() {
+  document.getElementById("minWeight").value = "0";
+  document.getElementById("hideMentioned").checked = false;
+  document.getElementById("depth2").checked = true;
+  const name = document.getElementById("entityInput").value.trim();
+  if (name) loadNetwork(name);
+}
+
+async function loadNetwork(name) {
+  showError("");
+  name = name || document.getElementById("entityInput").value.trim();
+  if (!name) return;
+  document.getElementById("entityInput").value = name;
+
+  const depth2 = document.getElementById("depth2").checked;
+  const hideMentioned = document.getElementById("hideMentioned").checked;
+  const minWeight = document.getElementById("minWeight").value || 0;
+  const exclude = hideMentioned ? "mentioned_with" : "";
+
+  const url = `/entity/${encodeURIComponent(name)}/network?depth2=${depth2}&min_weight=${minWeight}` +
+              (exclude ? `&exclude_relations=${exclude}` : "");
+
+  let data;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      showError(`"${name}" not found. ${body.detail || ""}`);
+      return;
+    }
+    data = await resp.json();
+  } catch (e) {
+    showError("Request failed: " + e.message);
+    return;
+  }
+
+  renderGraph(data);
+}
+
+function renderGraph(data) {
+  document.getElementById("centerLabel").textContent = data.center;
+  document.getElementById("statsLabel").textContent =
+    `${data.nodes.length} nodes · ${data.edges.length} edges`;
+
+  if (typeof vis === "undefined") {
+    showError("Graph library failed to load (vis-network). Check your network connection or try disabling ad-blockers for this page.");
+    return;
+  }
+
+  const container = document.getElementById("graph");
+
+  // Hard fallback for a flexbox min-height:0 collapse bug: vis-network
+  // reads container.clientHeight once at creation time. If the browser
+  // hasn't finished flex layout yet, the container can measure 0px height
+  // and vis-network silently creates a zero-size canvas with NO error —
+  // reproduced even with a single node and zero edges, which ruled out a
+  // data/filter problem and pointed straight at container sizing.
+  const rect = container.getBoundingClientRect();
+  if (rect.height < 50) {
+    container.style.height = (window.innerHeight - 90) + "px";
+  }
+
+  try {
+    const visNodes = new vis.DataSet(data.nodes.map(n => ({
+      id: n.id,
+      label: n.name,
+      color: {
+        background: TYPE_COLORS[n.type] || "#9ca3af",
+        border: TYPE_COLORS[n.type] || "#9ca3af",
+        highlight: { background: TYPE_COLORS[n.type] || "#9ca3af", border: "#1a1d21" }
+      },
+      font: { color: "#ffffff", size: 13, face: "-apple-system, sans-serif" },
+      size: n.name === data.center ? 28 : 17,
+      borderWidth: n.name === data.center ? 3 : 0,
+      shadow: { enabled: true, color: "rgba(0,0,0,0.08)", size: 6, x: 0, y: 2 },
+    })));
+
+    const visEdges = new vis.DataSet(data.edges.map((e, i) => {
+      const sourceNode = data.nodes.find(n => n.name === e.source);
+      const targetNode = data.nodes.find(n => n.name === e.target);
+      return {
+        id: "e" + i,
+        dbEdgeId: e.id,
+        from: sourceNode ? sourceNode.id : null,
+        to: targetNode ? targetNode.id : null,
+        label: `${e.relation} (${e.weight})`,
+        color: { color: REL_COLORS[e.relation] || "#c7ccd1", opacity: 0.85 },
+        font: { size: 9, color: "#6b7280", strokeWidth: 4, strokeColor: "#fafafa" },
+        width: Math.min(1 + e.weight * 0.4, 6),
+        arrows: e.relation === "mentioned_with" ? "" : "to",
+      };
+    }).filter(e => e.from !== null && e.to !== null));
+
+    const options = {
+      physics: {
+        barnesHut: { gravitationalConstant: -4000, springLength: 120 },
+        stabilization: { iterations: 150 }
+      },
+      interaction: { hover: true },
+      autoResize: true,
+    };
+
+    if (network) network.destroy();
+    network = new vis.Network(container, { nodes: visNodes, edges: visEdges }, options);
+
+    // Second-layer guard: force a resize + fit on the next animation frame,
+    // after the browser has definitely finished layout (e.g. in case the
+    // error banner above just appeared/disappeared and shifted #graph's
+    // actual height after the network was already created).
+    requestAnimationFrame(() => {
+      network.redraw();
+      network.fit({ animation: false });
+    });
+
+    if (data.edges.length === 0) {
+      showErrorWithAction(
+        `"${data.center}" has no edges matching the current filters.`,
+        "Reset filters", resetFilters
+      );
+    } else {
+      showError("");
+    }
+
+    network.on("click", async (params) => {
+      if (params.nodes.length > 0) {
+        const node = visNodes.get(params.nodes[0]);
+        loadNetwork(node.label);
+      } else if (params.edges.length > 0) {
+        const edge = visEdges.get(params.edges[0]);
+        showEdgeSources(edge.dbEdgeId, edge.label);
+      }
+    });
+  } catch (err) {
+    console.error("Graph rendering failed:", err);
+    showError("Graph rendering failed: " + err.message + " (see browser console for details)");
+  }
+}
+
+function fitGraph() {
+  if (network) network.fit({ animation: true });
+}
+
+window.addEventListener("resize", () => {
+  if (network) network.redraw();
+});
+
+async function showEdgeSources(edgeId, label) {
+  const panel = document.getElementById("sourcesPanel");
+  const body = document.getElementById("sourcesBody");
+  document.getElementById("sourcesTitle").textContent = `Sources: ${label}`;
+  body.innerHTML = "loading…";
+  panel.style.display = "block";
+
+  try {
+    const resp = await fetch(`/edges/${edgeId}/sources`);
+    if (!resp.ok) { body.innerHTML = "No sources found for this edge."; return; }
+    const data = await resp.json();
+    body.innerHTML = data.sources.map(s => `
+      <div class="source-item">
+        <div class="snippet">"${escapeHtml(s.snippet)}"</div>
+        <div class="meta">
+          ${s.source_type} · ${s.extracted_at.slice(0,19).replace("T"," ")}<br>
+          <a href="${s.source_url}" target="_blank">${escapeHtml(s.title || s.source_url)}</a>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    body.innerHTML = "Failed to load sources.";
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str || "";
+  return div.innerHTML;
+}
+
+async function loadCentral() {
+  const hideMentioned = document.getElementById("centralHideMentioned").checked;
+  const url = "/entities/central?limit=15" + (hideMentioned ? "&exclude_relations=mentioned_with" : "");
+  const list = document.getElementById("centralList");
+  list.innerHTML = "loading…";
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    list.innerHTML = data.entities.map(e => `
+      <div class="list-item" data-name="${escapeHtml(e.name)}">
+        <span>${escapeHtml(e.name)} <span class="badge">${e.type}</span></span>
+        <span class="badge">${e.score}</span>
+      </div>
+    `).join("");
+  } catch (e) {
+    list.innerHTML = "Failed to load.";
+  }
+}
+
+async function loadEmerging() {
+  const since = document.getElementById("sinceInput").value;
+  const list = document.getElementById("emergingList");
+  if (!since) { list.innerHTML = "Pick a timestamp first."; return; }
+  list.innerHTML = "loading…";
+  try {
+    const resp = await fetch(`/connections/new?since=${encodeURIComponent(since)}:00&min_absolute=2&growth_ratio=1.5&limit=30`);
+    const data = await resp.json();
+    if (data.connections.length === 0) {
+      list.innerHTML = `<span style="color:var(--muted); font-size:12px;">No new/grown edges since this timestamp.</span>`;
+      return;
+    }
+    list.innerHTML = data.connections.map(c => `
+      <div class="list-item" data-name="${escapeHtml(c.source)}">
+        <span>${escapeHtml(c.source)} → ${escapeHtml(c.target)}</span>
+        <span class="badge ${c.status}">${c.status} (${c.mentions_after})</span>
+      </div>
+    `).join("");
+  } catch (e) {
+    list.innerHTML = "Failed to load.";
+  }
+}
+
+// Single delegated click handler for both sidebar lists — avoids inline
+// onclick attributes entirely, so entity names containing apostrophes or
+// quotes (e.g. a possessive like "Korea's") can never break the markup.
+document.addEventListener("click", (e) => {
+  const item = e.target.closest(".list-item");
+  if (item && item.dataset.name) {
+    loadNetwork(item.dataset.name);
+  }
+});
+
+(function initDefaults() {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  document.getElementById("sinceInput").value = now.toISOString().slice(0, 16);
+})();
+
+loadCentral();
+</script>
+</body>
+</html>
